@@ -5,3 +5,4 @@ dist
 # lokal opsætning (absolutte stier, tredjeparts-addon)
 .mcp.json
 blender-addon/
+*.blend1
