@@ -24,7 +24,9 @@
           <div class="buttons">
             <button id="startBtn" class="btn primary" type="button">Start</button>
             <button id="resetBtn" class="btn" type="button" title="Nyt spil">Nyt spil</button>
+            <button id="mpBtn" class="btn" type="button">Multiplayer</button>
           </div>
+          <div id="roomBadge" class="room-badge" hidden></div>
         </header>
         <div class="race">
           <ol id="lanes" class="lanes"></ol>
@@ -34,6 +36,10 @@
           Hold venstre museknap nede på en kugle, før hånden opad og slip for at kaste. Første til
           <b>20 point</b> vinder.
         </p>
+        <section class="top10" aria-labelledby="top10Title">
+          <h3 id="top10Title">Top 10 · hurtigste vindere</h3>
+          <ol id="top10"><li class="muted">Henter …</li></ol>
+        </section>
       </aside>
       <main id="stage">
         <canvas id="scene" aria-label="Spillebordet"></canvas>
@@ -47,6 +53,12 @@
         <h2 id="winnerTitle"></h2>
         <p id="winnerText"></p>
         <button id="againBtn" class="btn primary" type="button">Spil igen</button>
+      </div>
+    </div>
+    <div id="lobby" class="modal" hidden>
+      <div class="card lobby-card" role="dialog" aria-modal="true" aria-label="Multiplayer-lobby">
+        <button class="close" type="button" data-act="close" aria-label="Luk">×</button>
+        <div class="lobby-body"></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

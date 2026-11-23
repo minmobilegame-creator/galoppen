@@ -26,6 +26,8 @@ import {
 import { ThrowTracker } from './game/throw';
 import { GameScene } from './render/scene';
 import { Scoreboard } from './ui/scoreboard';
+import { Lobby, renderTop10 } from './ui/lobby';
+import { Multiplayer, type RoomRow } from './net/multiplayer';
 import { Sfx } from './audio';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -57,6 +59,65 @@ const tracker = new ThrowTracker();
 let race: Race = createRace();
 board.build(race);
 
+/* ---------------------------------------------------------------- multiplayer */
+
+const mp = new Multiplayer();
+const mpBtn = $<HTMLButtonElement>('mpBtn');
+const roomBadge = $<HTMLDivElement>('roomBadge');
+const top10 = $<HTMLOListElement>('top10');
+const lobby = new Lobby(mp, () => newRace(false));
+let boardSig = '';
+let lastRoomStatus: RoomRow['status'] | null = null;
+
+mpBtn.addEventListener('click', () => {
+  sfx.unlock();
+  lobby.open();
+});
+
+/** Byg scoretavlen igen, hvis spillerne er skiftet (navne eller rækkefølge). */
+function syncBoard(): void {
+  const sig = race.racers.map((r) => `${r.id}:${r.name}`).join('|');
+  if (sig !== boardSig) {
+    board.build(race);
+    boardSig = sig;
+  }
+}
+
+mp.onChange(() => {
+  const room = mp.room;
+  const online = !!room;
+  startBtn.hidden = online;
+  resetBtn.hidden = online;
+  mpBtn.textContent = online ? `Rum ${room!.code}` : 'Multiplayer';
+  roomBadge.hidden = !online;
+  if (online) {
+    const humans = mp.players.filter((p) => !p.is_ai).length;
+    roomBadge.innerHTML = `Online-rum <b>${room!.code}</b> · ${humans} ${humans === 1 ? 'spiller' : 'spillere'}`;
+    race = mp.toRace();
+  } else {
+    race = createRace();
+  }
+  syncBoard();
+
+  const status = room?.status ?? null;
+  if (status !== lastRoomStatus) {
+    if (status === 'playing') {
+      lobby.close();
+      winner.hidden = true;
+      popupCenter('Løbet er startet!');
+    } else if (status === 'finished') {
+      race = mp.toRace();
+      showWinner();
+      void renderTop10(top10);
+    } else if (status === 'lobby' && lastRoomStatus === 'finished') {
+      winner.hidden = true;
+      lobby.open();
+    }
+    lastRoomStatus = status;
+  }
+  refreshButtons();
+});
+
 /* ---------------------------------------------------------------- UI */
 
 function refreshButtons(): void {
@@ -70,6 +131,16 @@ function refreshButtons(): void {
   startBtn.classList.toggle('running', race.status === 'running');
 }
 
+function popupCenter(text: string): void {
+  const el = document.createElement('div');
+  el.className = 'popup p1';
+  el.textContent = text;
+  el.style.left = '50%';
+  el.style.top = '40%';
+  popups.appendChild(el);
+  setTimeout(() => el.remove(), 1200);
+}
+
 function refreshBest(): void {
   const b = loadBest(store);
   bestEl.textContent = b == null ? '–' : formatTime(b);
@@ -77,7 +148,8 @@ function refreshBest(): void {
 
 function newRace(autoStart: boolean): void {
   race = createRace();
-  board.build(race);
+  boardSig = '';
+  syncBoard();
   winner.hidden = true;
   if (autoStart) start(race);
   refreshButtons();
@@ -91,21 +163,33 @@ startBtn.addEventListener('click', () => {
   refreshButtons();
 });
 resetBtn.addEventListener('click', () => newRace(false));
-$<HTMLButtonElement>('againBtn').addEventListener('click', () => newRace(true));
+$<HTMLButtonElement>('againBtn').addEventListener('click', () => {
+  if (!mp.inRoom) return newRace(true);
+  // Online: værten sender rummet tilbage til lobbyen; de andre venter der.
+  winner.hidden = true;
+  if (mp.isHost) void mp.reset().catch((e) => console.warn(e));
+  else lobby.open();
+});
 
 function showWinner(): void {
-  const w = race.winner!;
+  const w = race.winner;
   const t = formatTime(race.elapsed);
   let text: string;
-  if (w.human) {
+  if (!w) {
+    $('winnerTitle').textContent = 'Løbet er slut';
+    text = `Tid: ${t}.`;
+  } else if (w.human) {
     const record = saveBest(store, race.elapsed);
     refreshBest();
     $('winnerTitle').textContent = 'Du vandt! 🎉';
     text = `Din tid: ${t}.` + (record ? ' Ny rekord!' : '');
   } else {
-    $('winnerTitle').textContent = `${w.name} vandt`;
-    text = `${w.name} kom først i mål på ${t}. Prøv igen!`;
+    const name = w.name.replace(/ 🤖$/, '');
+    $('winnerTitle').textContent = `${name} vandt`;
+    text = `${name} kom først i mål på ${t}.` + (mp.inRoom ? '' : ' Prøv igen!');
   }
+  ($('againBtn') as HTMLButtonElement).textContent =
+    mp.inRoom ? (mp.isHost ? 'Tilbage til lobbyen' : 'Vent på værten') : 'Spil igen';
   $('winnerText').textContent = text;
   winner.hidden = false;
   sfx.fanfare();
@@ -207,7 +291,9 @@ function handle(events: PhysicsEvent[]): void {
         sfx.score(ev.points);
         view.flashHole(ev.hole.id);
         popup(ev.hole.x, ev.hole.y, `+${ev.points}`, `p${ev.points}`);
-        if (addPoints(race, 0, ev.points)) showWinner();
+        // Online går point til serveren, som validerer dem og opdaterer alle via Realtime.
+        if (mp.inRoom) void mp.reportScore(ev.points);
+        else if (addPoints(race, 0, ev.points)) showWinner();
         break;
       }
       case 'miss':
@@ -233,9 +319,14 @@ function frame(now: number): void {
 
   handle(step(world, dt));
 
-  const wasRunning = race.status === 'running';
-  tick(race, dt * 1000);
-  if (wasRunning && race.status === 'finished') showWinner();
+  if (mp.inRoom) {
+    mp.tickAI();
+    race.elapsed = mp.elapsed();
+  } else {
+    const wasRunning = race.status === 'running';
+    tick(race, dt * 1000);
+    if (wasRunning && race.status === 'finished') showWinner();
+  }
   board.update(race);
 
   const t = formatTime(race.elapsed);
@@ -265,8 +356,9 @@ ro.observe(stage);
 ro.observe($('horses'));
 
 // Kun under udvikling: adgang til spillets tilstand fra konsollen.
-if (import.meta.env.DEV) Object.assign(window, { __galoppen: { world, view, get race() { return race; } } });
+if (import.meta.env.DEV) Object.assign(window, { __galoppen: { world, view, mp, get race() { return race; } } });
 
+void renderTop10(top10);
 refreshBest();
 refreshButtons();
 const models = `${import.meta.env.BASE_URL}models/`;

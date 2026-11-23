@@ -91,7 +91,7 @@ export function tick(race: Race, dtMs: number, rng: Rng = Math.random): RaceEven
 }
 
 /** Tid mellem computerkast: 2,4–4,4 s (som et menneske med to kugler). */
-function aiDelay(rng: Rng): number {
+export function aiDelay(rng: Rng): number {
   return 2400 + rng() * 2000;
 }
 
