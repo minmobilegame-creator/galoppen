@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="da">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#14102a" />
+    <title>Galoppen</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="board" aria-label="Scoretavle">
+        <header class="board-head">
+          <h1>Galoppen</h1>
+          <div class="clock">
+            <div><span class="label">Tid</span><span id="time" class="value">0:00.0</span></div>
+            <div><span class="label">Bedste</span><span id="best" class="value">–</span></div>
+          </div>
+          <div class="buttons">
+            <button id="startBtn" class="btn primary" type="button">Start</button>
+            <button id="resetBtn" class="btn" type="button" title="Nyt spil">Nyt spil</button>
+          </div>
+        </header>
+        <ol id="lanes" class="lanes"></ol>
+        <p class="hint" id="hint">
+          Hold venstre museknap nede på en kugle, før hånden opad og slip for at kaste. Første til
+          <b>20 point</b> vinder.
+        </p>
+      </aside>
+      <main id="stage">
+        <canvas id="scene" aria-label="Spillebordet"></canvas>
+        <div id="popups"></div>
+        <div id="loading">Stiller bordet op …</div>
+      </main>
+    </div>
+    <div id="winner" class="modal" hidden>
+      <div class="card">
+        <div class="trophy" aria-hidden="true">🏆</div>
+        <h2 id="winnerTitle"></h2>
+        <p id="winnerText"></p>
+        <button id="againBtn" class="btn primary" type="button">Spil igen</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
