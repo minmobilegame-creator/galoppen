@@ -2,14 +2,14 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { BALL_HOMES, BALL_R, FIELD, HAND_LIMIT_Y, HOLES, type Hole } from '../game/layout';
-import { stoppingDistance, type Ball, type World } from '../game/physics';
+import { ballLift, stoppingDistance, type Ball, type World } from '../game/physics';
 
 /** Bordets 2D-punkt (x, y) -> Three.js (x, højde, -y). glTF-eksporten er Y-op. */
 export const toWorld = (x: number, y: number, h = 0) => new THREE.Vector3(x, h, -y);
 
 const HOLE_COLORS: Record<Hole['color'], number> = { yellow: 0xffd400, blue: 0x4060ff, red: 0xff1830 };
-/** Hullerne gløder svagt hele tiden og blusser op ved point. */
-const HOLE_GLOW = 0.35;
+/** Gummilisterne gløder svagt hele tiden og blusser op ved point. */
+const HOLE_GLOW = 0.2;
 
 export class GameScene {
   readonly renderer: THREE.WebGLRenderer;
@@ -67,9 +67,10 @@ export class GameScene {
       if (!m.isMesh) return;
       m.receiveShadow = true;
       m.castShadow = m.name.startsWith('Rim');
-      const hole = HOLES.find((h) => h.id === m.name);
+      // Gummilisten har hullets pointfarve og lyser op, når der scores.
+      const hole = HOLES.find((h) => h.id.replace('Hole_', 'Rim_') === m.name);
       if (hole) {
-        // Egen materialekopi pr. hul, så det kan lyse op, når der scores.
+        // Egen materialekopi pr. liste, så den kan lyse op alene.
         const mat = (m.material as THREE.MeshStandardMaterial).clone();
         mat.emissive = new THREE.Color(HOLE_COLORS[hole.color]);
         mat.emissiveIntensity = HOLE_GLOW;
@@ -276,7 +277,8 @@ export class GameScene {
     const p = world.params;
     let x = b.x;
     let y = b.y;
-    let h = BALL_R;
+    // Løftet op på gummilisten eller sunket lidt ned i et hul.
+    let h = BALL_R + ballLift(b, p);
     m.visible = true;
     m.scale.setScalar(1);
 
@@ -284,7 +286,8 @@ export class GameScene {
       h = BALL_R + 0.06; // løftet en smule i hånden
     } else if (b.state === 'sinking') {
       const k = Math.min(1, b.t / p.sinkTime);
-      h = BALL_R - k * k * 0.3;
+      // Fortsætter fra den dybde, kuglen allerede var sunket til over hullet.
+      h = BALL_R - world.params.captureDepth - k * k * 0.27;
       m.scale.setScalar(1 - k * 0.35);
       m.visible = k < 0.98;
     } else if (b.state === 'returning') {

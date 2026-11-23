@@ -29,6 +29,10 @@ export interface Ball {
   t: number;
   /** Hullet kuglen er sunket i (under sinking). */
   hole: Hole | null;
+  /** Hvor langt kuglen er sunket ned i det hul, den ruller hen over (m). */
+  drop: number;
+  /** Den nedadgående fart i hullet (m/s). */
+  dropV: number;
 }
 
 export interface PhysicsParams {
@@ -40,11 +44,22 @@ export interface PhysicsParams {
   trayFriction: number;
   /** Ekstra bremsning når kuglen ruller hen over gummilisten (m/s²). */
   rimFriction: number;
+  /**
+   * Gummilisten er en lille vold: hvor højt kuglens centrum løftes på toppen (m).
+   * En kugle skal have ca. sqrt(2·g·højde) i fart ind mod hullet for at komme over.
+   */
+  rimHeight: number;
+  /** Hvor langt fra listens midterlinje kuglen rører den (m). */
+  rimReach: number;
   /** Hvor kraftigt hullet trækker en kugle, der er over åbningen (m/s²). */
   holePull: number;
-  /** Kuglen suges ned, hvis den er tættere på centrum end dette ... */
+  /** Andel af tyngdekraften, der trækker kuglen ned, når den er over hullet (0..1). */
+  dropGravity: number;
+  /** Er kuglen sunket så dybt ned (m), mens den var over hullet, er den fanget. */
+  captureDepth: number;
+  /** En meget langsom kugle tæt på centrum fanges også ... */
   captureRadius: number;
-  /** ... og langsommere end dette (m/s). */
+  /** ... hvis den er langsommere end dette (m/s). */
   captureSpeed: number;
   wallRestitution: number;
   ballRestitution: number;
@@ -57,10 +72,14 @@ export const DEFAULT_PARAMS: PhysicsParams = {
   slope: 0.3,
   rollFriction: 0.1,
   trayFriction: 1.6,
-  rimFriction: 0.5,
-  holePull: 4,
-  captureRadius: HOLE_R * 0.75,
-  captureSpeed: 1.0,
+  rimFriction: 0.6,
+  rimHeight: 0.014,
+  rimReach: 0.085,
+  holePull: 3,
+  dropGravity: 0.6,
+  captureDepth: 0.035,
+  captureRadius: HOLE_R * 0.6,
+  captureSpeed: 0.6,
   wallRestitution: 0.55,
   ballRestitution: 0.9,
   maxThrowSpeed: 6,
@@ -93,6 +112,8 @@ export function createWorld(params: Partial<PhysicsParams> = {}): World {
       inPlay: false,
       t: 0,
       hole: null,
+      drop: 0,
+      dropV: 0,
     })),
   };
 }
@@ -129,6 +150,7 @@ export function pickBall(world: World, x: number, y: number, reach = 0.45): Ball
   if (best) {
     best.state = 'held';
     best.vx = best.vy = 0;
+    best.drop = best.dropV = 0;
     best.inPlay = false;
   }
   return best;
@@ -215,18 +237,35 @@ function integrate(b: Ball, h: number, p: PhysicsParams): void {
   let ax = 0;
   let ay = inTray ? 0 : -p.slope;
 
-  // Hullerne: træk mod centrum, når kuglen er over åbningen; gummilisten bremser.
   let extraFriction = inTray ? p.trayFriction : 0;
-  for (const hole of HOLES) {
-    const dx = hole.x - b.x;
-    const dy = hole.y - b.y;
-    const d = Math.hypot(dx, dy);
-    if (d < HOLE_R && d > 1e-6) {
-      ax += (dx / d) * p.holePull;
-      ay += (dy / d) * p.holePull;
-    } else if (d < RIM_R + BALL_R * 0.3) {
+  let overHole = false;
+  const { hole, d, nx, ny } = nearestHole(b);
+  if (hole) {
+    // Gummilisten: en lav vold. Kraften skubber væk fra volden top (udad på ydersiden,
+    // indad mod hullet på indersiden), så kugler afbøjes og bremses.
+    const s = d - RIM_CENTER;
+    if (Math.abs(s) < p.rimReach) {
+      const push = (G * 2 * p.rimHeight * s) / (p.rimReach * p.rimReach);
+      ax -= nx * push;
+      ay -= ny * push;
       extraFriction += p.rimFriction;
     }
+    // Over åbningen mister kuglen støtte og synker ned; jo tættere på midten, jo hurtigere.
+    if (d < HOLE_R) {
+      overHole = true;
+      ax += nx * p.holePull;
+      ay += ny * p.holePull;
+      b.dropV += G * p.dropGravity * (1 - d / HOLE_R) * h;
+      b.drop += b.dropV * h;
+    }
+  }
+  if (!overHole && b.drop > 0) {
+    // Kuglen rullede op af hullet igen: den mister fart, jo dybere den nåede ned.
+    const k = 1 - 0.45 * Math.min(1, b.drop / p.captureDepth);
+    b.vx *= k;
+    b.vy *= k;
+    b.drop = 0;
+    b.dropV = 0;
   }
 
   b.vx += ax * h;
@@ -245,6 +284,38 @@ function integrate(b: Ball, h: number, p: PhysicsParams): void {
 
   b.x += b.vx * h;
   b.y += b.vy * h;
+}
+
+const G = 9.81;
+/** Gummilistens midterlinje. */
+const RIM_CENTER = (HOLE_R + RIM_R) / 2;
+
+/** Nærmeste hul og retningen fra kuglen mod hullets centrum. */
+function nearestHole(b: { x: number; y: number }): { hole: Hole | null; d: number; nx: number; ny: number } {
+  let best: Hole | null = null;
+  let bd = Infinity;
+  for (const hole of HOLES) {
+    const d = Math.hypot(hole.x - b.x, hole.y - b.y);
+    if (d < bd) {
+      bd = d;
+      best = hole;
+    }
+  }
+  if (!best || bd < 1e-6) return { hole: best, d: bd, nx: 0, ny: 0 };
+  return { hole: best, d: bd, nx: (best.x - b.x) / bd, ny: (best.y - b.y) / bd };
+}
+
+/**
+ * Hvor meget kuglen er løftet (+) eller sunket (-) i forhold til bordet lige nu:
+ * oppe på gummilisten eller nede i et hul. Bruges kun til visningen.
+ */
+export function ballLift(b: Ball, p: PhysicsParams = DEFAULT_PARAMS): number {
+  if (b.state !== 'rolling' && b.state !== 'resting') return 0;
+  const { hole, d } = nearestHole(b);
+  if (!hole) return 0;
+  const s = (d - RIM_CENTER) / p.rimReach;
+  const bump = Math.abs(s) < 1 ? p.rimHeight * (1 - s * s) : 0;
+  return bump - Math.min(b.drop, 0.06);
 }
 
 function collideWalls(b: Ball, p: PhysicsParams, events: PhysicsEvent[]): void {
@@ -274,11 +345,13 @@ function collideWalls(b: Ball, p: PhysicsParams, events: PhysicsEvent[]): void {
 }
 
 function checkCapture(b: Ball, p: PhysicsParams, events: PhysicsEvent[]): boolean {
-  const s = speedOf(b);
-  if (s >= p.captureSpeed) return false;
+  const slow = speedOf(b) < p.captureSpeed;
   for (const hole of HOLES) {
-    if (Math.hypot(hole.x - b.x, hole.y - b.y) < p.captureRadius) {
+    const d = Math.hypot(hole.x - b.x, hole.y - b.y);
+    // Fanget hvis den er sunket dybt nok ned, eller ligger og triller langsomt midt over hullet.
+    if ((d < HOLE_R && b.drop >= p.captureDepth) || (slow && d < p.captureRadius)) {
       b.state = 'sinking';
+      b.drop = b.dropV = 0;
       b.t = 0;
       b.hole = hole;
       b.x = hole.x;
@@ -353,6 +426,7 @@ function placeHome(world: World, b: Ball, events: PhysicsEvent[]): void {
   b.vx = b.vy = 0;
   b.t = 0;
   b.hole = null;
+  b.drop = b.dropV = 0;
   b.state = 'resting';
   events.push({ type: 'home', ball: b });
 }

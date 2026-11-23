@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { BALL_R, HAND_LIMIT_Y, HOLES, LAUNCH_LINE_Y } from '../src/game/layout';
+import { BALL_R, HAND_LIMIT_Y, HOLES, LAUNCH_LINE_Y, RIM_R } from '../src/game/layout';
 import {
+  ballLift,
   createWorld,
   moveHeld,
   pickBall,
@@ -135,12 +136,37 @@ describe('huller', () => {
     expect(w.balls[0].y).toBeGreaterThan(yellow.y);
   });
 
-  it('en kugle der kun strejfer kanten af hullet suges ikke ned', () => {
+  it('gummilisten afbøjer en kugle, der rammer den på siden', () => {
     const w = createWorld();
     const outer = HOLES.find((h) => h.id === 'Hole_Yellow_02')!;
-    launch(w, outer.x + 0.17, outer.y - 0.3, 0, 0.7);
-    const ev = run(w, 1.5);
+    const b = launch(w, outer.x + 0.25, outer.y - 0.4, 0, 1.2);
+    const ev = run(w, 0.6);
     expect(ev.some((e) => e.type === 'score')).toBe(false);
+    expect(b.x - (outer.x + 0.25)).toBeGreaterThan(0.05); // skubbet væk fra hullet
+  });
+
+  it('en meget langsom kugle kan ikke komme op over gummilisten', () => {
+    const w = createWorld({ slope: 0 });
+    const b = launch(w, yellow.x, yellow.y - 0.35, 0, 0.4);
+    const ev = run(w, 2);
+    expect(ev.some((e) => e.type === 'score')).toBe(false);
+    expect(b.y).toBeLessThan(yellow.y - RIM_R);
+  });
+
+  it('en kugle midt over hullet suges ned, selv med god fart', () => {
+    const w = createWorld();
+    launch(w, yellow.x, yellow.y - 0.4, 0, 1.5);
+    const ev = run(w, 1);
+    const s = ev.find((e) => e.type === 'score');
+    expect(s && s.type === 'score' && s.hole.id).toBe(yellow.id);
+  });
+
+  it('kuglen synker ned, mens den er over hullet', () => {
+    const w = createWorld();
+    const b = launch(w, yellow.x, yellow.y - 0.12, 0, 2.5);
+    step(w, 0.05);
+    expect(b.drop).toBeGreaterThan(0);
+    expect(ballLift(b)).toBeLessThan(0);
   });
 
   it('kuglen ruller tilbage til sin startplads efter point', () => {
