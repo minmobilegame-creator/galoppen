@@ -1,94 +1,156 @@
-import type { Race, Racer } from '../game/race';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import type { Race } from '../game/race';
 
 const SHIRTS = ['#ffd34d', '#4fc3ff', '#ff6b8b', '#b98cff'];
-const COATS = ['#7a4a26', '#3b2a1e', '#a8683a', '#efe6d6'];
+const COATS = ['#6b3a18', '#2a1d14', '#9a5a2c', '#e8dfcf'];
 
-/** En galoperende hest med jockey, vendt mod venstre (mod mål). */
-function horseSvg(shirt: string, coat: string): string {
-  const dark = coat === '#efe6d6' ? '#bdb2a0' : 'rgba(0,0,0,0.25)';
-  return `
-<svg viewBox="0 0 72 46" aria-hidden="true">
-  <g class="body-bob">
-    <g fill="${coat}" stroke="${dark}" stroke-width="0.6">
-      <rect class="leg a" x="20" y="25" width="3.2" height="15" rx="1.5"/>
-      <rect class="leg b" x="25" y="25" width="3.2" height="15" rx="1.5"/>
-      <rect class="leg b" x="44" y="25" width="3.2" height="15" rx="1.5"/>
-      <rect class="leg a" x="49" y="25" width="3.2" height="15" rx="1.5"/>
-      <path d="M53 20 C 60 18, 66 24, 67 33 C 63 28, 58 25, 54 25 Z" fill="${dark}"/>
-      <ellipse cx="37" cy="23" rx="18" ry="8.5"/>
-      <path d="M24 21 L 14 8 L 20 5 L 30 17 Z"/>
-      <path d="M8 11 C 8 7, 13 4, 19 5 L 20 11 C 16 13, 10 14, 8 11 Z"/>
-      <path d="M17 5 L 19 0.5 L 21 5 Z"/>
-    </g>
-    <path d="M15 7 C 18 4, 22 6, 26 12" fill="none" stroke="${dark}" stroke-width="2.2" stroke-linecap="round"/>
-    <circle cx="11" cy="9" r="0.9" fill="#111"/>
-    <path d="M30 15 L 36 8 L 41 11 L 38 17 Z" fill="${shirt}" stroke="rgba(0,0,0,0.3)" stroke-width="0.6"/>
-    <circle cx="35" cy="5.5" r="3.4" fill="${shirt}" stroke="rgba(0,0,0,0.3)" stroke-width="0.6"/>
-    <path d="M31.6 5.2 A3.4 3.4 0 0 1 38.4 5.2 Z" fill="#fff" opacity="0.6"/>
-    <path d="M33 11 L 25 14" stroke="${shirt}" stroke-width="2" stroke-linecap="round"/>
-  </g>
-</svg>`;
-}
-
-interface LaneEls {
+interface Lane {
   track: HTMLDivElement;
-  horse: HTMLDivElement;
   score: HTMLSpanElement;
   lastScore: number;
-  stopGallop?: number;
+  /** 0..1 af vejen fra start (højre) til mål (venstre). */
+  target: number;
+  shown: number;
+  gallopUntil: number;
+  horse?: THREE.Object3D;
+  mixer?: THREE.AnimationMixer;
 }
 
+/**
+ * Scoretavlen: DOM til navne, point og græsbaner, og et lille WebGL-lærred
+ * ovenpå med de animerede 3D-heste fra horse.glb.
+ */
 export class Scoreboard {
-  private lanes = new Map<number, LaneEls>();
+  private lanes: Lane[] = [];
+  private renderer: THREE.WebGLRenderer;
+  private scene = new THREE.Scene();
+  private camera = new THREE.OrthographicCamera(0, 1, 0, -1, -100, 100);
+  private template: THREE.Object3D | null = null;
+  private clip: THREE.AnimationClip | null = null;
+  private clock = 0;
 
-  constructor(private root: HTMLOListElement) {}
+  constructor(
+    private root: HTMLOListElement,
+    private canvas: HTMLCanvasElement,
+  ) {
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+    sun.position.set(-2, 3, 4);
+    this.scene.add(sun);
+  }
+
+  async loadHorse(url: string): Promise<void> {
+    const gltf = await new GLTFLoader().loadAsync(url);
+    this.template = gltf.scene;
+    this.clip = gltf.animations[0] ?? null;
+    this.lanes.forEach((l, i) => this.attachHorse(l, i));
+  }
 
   build(race: Race): void {
+    for (const l of this.lanes) if (l.horse) this.scene.remove(l.horse);
     this.root.innerHTML = '';
-    this.lanes.clear();
-    race.racers.forEach((r, i) => {
+    this.lanes = race.racers.map((r, i) => {
       const li = document.createElement('li');
       li.className = 'lane' + (r.human ? ' human' : '');
       li.innerHTML = `
         <div class="tag" style="--shirt:${SHIRTS[i % SHIRTS.length]}"><span class="name">${r.name}</span><span class="score">0</span></div>
-        <div class="track"><div class="horse">${horseSvg(SHIRTS[i % SHIRTS.length], COATS[i % COATS.length])}</div></div>`;
+        <div class="track"></div>`;
       this.root.appendChild(li);
-      this.lanes.set(r.id, {
+      const lane: Lane = {
         track: li.querySelector('.track')!,
-        horse: li.querySelector('.horse')!,
         score: li.querySelector('.score')!,
         lastScore: 0,
-      });
+        target: 0,
+        shown: 0,
+        gallopUntil: 0,
+      };
+      this.attachHorse(lane, i);
+      return lane;
     });
-    // Placér hestene ved start uden animation, og slå den til bagefter.
-    this.root.classList.remove('ready');
-    this.update(race);
-    requestAnimationFrame(() => requestAnimationFrame(() => this.root.classList.add('ready')));
+    this.resize();
   }
 
-  update(race: Race): void {
-    for (const r of race.racers) this.updateLane(r, race.target);
-  }
-
-  private updateLane(r: Racer, target: number): void {
-    const el = this.lanes.get(r.id);
-    if (!el) return;
-    const laneW = el.track.clientWidth;
-    const horseW = el.horse.offsetWidth || 72;
-    const finish = 6; // næsen ved mållinjen
-    const startX = laneW - horseW - 6;
-    const frac = Math.min(1, r.score / target);
-    el.horse.style.left = `${startX - (startX - finish) * frac}px`;
-
-    if (r.score !== el.lastScore) {
-      el.score.textContent = String(r.score);
-      el.score.classList.remove('bump');
-      void el.score.offsetWidth; // genstart animationen
-      el.score.classList.add('bump');
-      el.horse.classList.add('galloping');
-      clearTimeout(el.stopGallop);
-      el.stopGallop = window.setTimeout(() => el.horse.classList.remove('galloping'), 950);
-      el.lastScore = r.score;
+  private attachHorse(lane: Lane, i: number): void {
+    if (!this.template || lane.horse) return;
+    const h = this.template.clone(true);
+    // Hver bane får sin egen farve på rytterens trøje og hestens pels.
+    h.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const mat = m.material as THREE.MeshStandardMaterial;
+      if (mat.name === 'Rider_Shirt') {
+        m.material = mat.clone();
+        (m.material as THREE.MeshStandardMaterial).color.set(SHIRTS[i % SHIRTS.length]);
+      } else if (mat.name === 'Horse_Coat') {
+        m.material = mat.clone();
+        (m.material as THREE.MeshStandardMaterial).color.set(COATS[i % COATS.length]);
+      }
+    });
+    h.rotation.y = -0.35; // lidt skrå, så hesten ser tredimensionel ud
+    this.scene.add(h);
+    lane.horse = h;
+    if (this.clip) {
+      lane.mixer = new THREE.AnimationMixer(h);
+      const action = lane.mixer.clipAction(this.clip);
+      action.play();
+      // Start benene forskudt, så hestene ikke galopperer i takt.
+      action.time = (i * 0.13) % this.clip.duration;
     }
+  }
+
+  resize(): void {
+    const w = this.canvas.clientWidth;
+    const h = this.canvas.clientHeight;
+    if (!w || !h) return;
+    this.renderer.setSize(w, h, false);
+    this.camera.right = w;
+    this.camera.bottom = -h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  /** Kaldes når scoren ændrer sig (og ved hver frame; det er billigt). */
+  update(race: Race): void {
+    race.racers.forEach((r, i) => {
+      const lane = this.lanes[i];
+      if (!lane) return;
+      lane.target = Math.min(1, r.score / race.target);
+      if (r.score !== lane.lastScore) {
+        lane.score.textContent = String(r.score);
+        lane.score.classList.remove('bump');
+        void lane.score.offsetWidth; // genstart animationen
+        lane.score.classList.add('bump');
+        lane.gallopUntil = this.clock + 0.4;
+        lane.lastScore = r.score;
+      }
+    });
+  }
+
+  /** Flyt og animer hestene, og tegn lærredet. */
+  frame(dt: number): void {
+    this.clock += dt;
+    const box = this.canvas.getBoundingClientRect();
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    for (const lane of this.lanes) {
+      if (!lane.horse) continue;
+      const r = lane.track.getBoundingClientRect();
+      const scale = r.height * 0.46; // hesten er ca. 1,8 enheder høj
+      const len = 1.85 * scale;
+      const startX = r.right - box.left - len * 0.5 - 6;
+      const finishX = r.left - box.left + len * 0.5 + 8;
+      // Glid hen mod målet; galopér mens den bevæger sig.
+      const diff = lane.target - lane.shown;
+      lane.shown += reduced ? diff : diff * Math.min(1, dt * 2.2);
+      const moving = Math.abs(diff) > 0.002 || this.clock < lane.gallopUntil;
+      const x = startX + (finishX - startX) * lane.shown;
+      const y = -(r.bottom - box.top) + 3;
+      lane.horse.position.set(x, y, 0);
+      lane.horse.scale.setScalar(scale);
+      lane.mixer?.update(moving && !reduced ? dt * 1.1 : 0);
+    }
+    this.renderer.render(this.scene, this.camera);
   }
 }

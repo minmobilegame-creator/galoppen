@@ -29,8 +29,11 @@ npm run build
 | `src/game/throw.ts` | Kastets fart fra musebevægelsen |
 | `src/game/race.ts` | Væddeløb, computerspillere og bedste tid |
 | `src/render/scene.ts` | Three.js-scenen |
-| `src/ui/scoreboard.ts` | Scoretavlen med heste |
-| `public/models/playfield.glb` | Bordet, eksporteret fra Blender |
+| `src/ui/scoreboard.ts` | Scoretavlen med animerede 3D-heste |
+| `public/models/*.glb` | Bræt, huller, kugle og hest (med galop-loop), eksporteret fra Blender |
+| `assets/blender/galoppen_assets.blend` | Blender-kilden til alle modeller |
+| `docs/previews/` | Forhåndsvisninger af modellerne |
+| `docs/playtest-rapport.md` | Rapport fra automatisk playtest i Chrome |
 
 Fysikken kører i 2D på bordet (meter, 1 m ≈ 100 px), mens visningen er 3D.
 

@@ -17,6 +17,30 @@ describe('kastets hastighed', () => {
     expect(t.velocity(160 + 13 * 16).vx).toBeCloseTo(0, 6);
   });
 
+  it('to tætte musepunkter giver ikke en vild fart', () => {
+    // 0,3 m på 2 ms ville naivt være 150 m/s
+    const v = estimateVelocity(
+      [
+        { t: 100, x: 0, y: 0 },
+        { t: 102, x: 0, y: 0.3 },
+      ],
+      102,
+    );
+    expect(v.vy).toBeLessThanOrEqual(7.5);
+  });
+
+  it('bruger punktet før vinduet, når der er få punkter', () => {
+    const v = estimateVelocity(
+      [
+        { t: 0, x: 0, y: 0 },
+        { t: 160, x: 0, y: 0.32 },
+        { t: 200, x: 0, y: 0.4 },
+      ],
+      200,
+    );
+    expect(v.vy).toBeCloseTo(2, 1);
+  });
+
   it('giver 0 med for få prøver', () => {
     expect(estimateVelocity([{ t: 0, x: 0, y: 0 }], 0)).toEqual({ vx: 0, vy: 0 });
   });

@@ -1,6 +1,16 @@
 import './style.css';
-import { HAND_LIMIT_Y } from './game/layout';
-import { createWorld, moveHeld, pickBall, releaseBall, step, type Ball, type PhysicsEvent } from './game/physics';
+import { FIELD, HAND_LIMIT_Y } from './game/layout';
+import {
+  createWorld,
+  findPickable,
+  inHandZone,
+  moveHeld,
+  pickBall,
+  releaseBall,
+  step,
+  type Ball,
+  type PhysicsEvent,
+} from './game/physics';
 import {
   addPoints,
   createRace,
@@ -40,7 +50,7 @@ const store = safeStorage();
 
 const world = createWorld();
 const view = new GameScene(canvas);
-const board = new Scoreboard($<HTMLOListElement>('lanes'));
+const board = new Scoreboard($<HTMLOListElement>('lanes'), $<HTMLCanvasElement>('horses'));
 const sfx = new Sfx();
 const tracker = new ThrowTracker();
 
@@ -118,9 +128,20 @@ function popup(x: number, y: number, text: string, cls: string): void {
 let held: Ball | null = null;
 let pointerId: number | null = null;
 
+/**
+ * Musens fart ganges med denne faktor. Uden den sender et lille ryk på 50 px
+ * kuglen helt op til de røde huller, hvilket gør kastet svært at styre.
+ */
+const THROW_GAIN = 0.6;
+
+function throwVelocity(now: number): { vx: number; vy: number } {
+  const v = tracker.velocity(now);
+  return { vx: v.vx * THROW_GAIN, vy: v.vy * THROW_GAIN };
+}
+
 function release(now: number): void {
   if (!held) return;
-  const v = tracker.velocity(now);
+  const v = throwVelocity(now);
   releaseBall(world, held, v.vx, v.vy);
   held = null;
   pointerId = null;
@@ -150,7 +171,12 @@ canvas.addEventListener('pointerdown', (e) => {
 
 canvas.addEventListener('pointermove', (e) => {
   const p = view.pickTable(e.clientX, e.clientY);
-  view.setCursor(p, !!held);
+  // Ringen vises kun, hvor hånden kan være, og lyser op over en kugle, der kan tages.
+  const onTable = !!p && Math.abs(p.x) < FIELD.xMax && p.y > FIELD.yMin && p.y < FIELD.yMax;
+  const inReach = onTable && (held != null || inHandZone(p!.y));
+  const canGrab = inReach && !held && !!findPickable(world, p!.x, p!.y);
+  view.setCursor(inReach ? p : null, !!held || canGrab);
+  canvas.classList.toggle('can-grab', canGrab);
   if (!held || e.pointerId !== pointerId || !p) return;
   // Brug alle mellemliggende musepunkter for en præcis fart.
   const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
@@ -219,33 +245,38 @@ function frame(now: number): void {
   }
 
   if (held) {
-    const v = tracker.velocity(now);
+    const v = throwVelocity(now);
     view.setAim(held, v.vx, v.vy);
   }
 
   view.update(world, dt, !!held);
   view.render();
+  board.frame(dt);
   requestAnimationFrame(frame);
 }
 
 /* ---------------------------------------------------------------- start */
 
-new ResizeObserver(() => {
+const ro = new ResizeObserver(() => {
   view.resize();
-  board.update(race);
-}).observe(stage);
+  board.resize();
+});
+ro.observe(stage);
+ro.observe($('horses'));
 
 // Kun under udvikling: adgang til spillets tilstand fra konsollen.
 if (import.meta.env.DEV) Object.assign(window, { __galoppen: { world, view, get race() { return race; } } });
 
 refreshBest();
 refreshButtons();
+const models = `${import.meta.env.BASE_URL}models/`;
 view
-  .loadPlayfield(`${import.meta.env.BASE_URL}models/playfield.glb`)
+  .loadModels(models)
   .then(() => $('loading').classList.add('done'))
   .catch((err) => {
     console.error(err);
     $('loading').textContent = 'Kunne ikke indlæse bordet.';
   });
+board.loadHorse(models + 'horse.glb').catch((err) => console.error(err));
 view.resize();
 requestAnimationFrame(frame);

@@ -107,8 +107,8 @@ export function inHandZone(y: number): boolean {
   return y <= HAND_LIMIT_Y;
 }
 
-/** Find den kugle hånden kan samle op nær (x, y), eller null. */
-export function pickBall(world: World, x: number, y: number, reach = 0.45): Ball | null {
+/** Den kugle hånden kan nå ved (x, y), uden at samle den op. */
+export function findPickable(world: World, x: number, y: number, reach = 0.45): Ball | null {
   if (!inHandZone(y)) return null;
   let best: Ball | null = null;
   let bestD = reach;
@@ -120,6 +120,12 @@ export function pickBall(world: World, x: number, y: number, reach = 0.45): Ball
       bestD = d;
     }
   }
+  return best;
+}
+
+/** Find den kugle hånden kan samle op nær (x, y), og tag den. */
+export function pickBall(world: World, x: number, y: number, reach = 0.45): Ball | null {
+  const best = findPickable(world, x, y, reach);
   if (best) {
     best.state = 'held';
     best.vx = best.vy = 0;

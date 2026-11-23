@@ -8,8 +8,8 @@ import { stoppingDistance, type Ball, type World } from '../game/physics';
 export const toWorld = (x: number, y: number, h = 0) => new THREE.Vector3(x, h, -y);
 
 const HOLE_COLORS: Record<Hole['color'], number> = { yellow: 0xffd400, blue: 0x4060ff, red: 0xff1830 };
-/** Hullernes bund (i Blender ligger den 0,29 m nede, hvilket gør farven svær at se). */
-const HOLE_FLOOR = -0.1;
+/** Hullerne gløder svagt hele tiden og blusser op ved point. */
+const HOLE_GLOW = 0.35;
 
 export class GameScene {
   readonly renderer: THREE.WebGLRenderer;
@@ -41,7 +41,6 @@ export class GameScene {
     this.scene.environmentIntensity = 0.3;
 
     this.addLights();
-    this.addBalls();
     this.aimLine = this.makeAimLine();
     [this.handZone, this.handEdge] = this.makeHandZone();
     this.cursor = this.makeCursor();
@@ -49,31 +48,54 @@ export class GameScene {
 
   /* ------------------------------------------------------------- opsætning */
 
-  async loadPlayfield(url: string): Promise<void> {
-    const gltf = await new GLTFLoader().loadAsync(url);
-    gltf.scene.traverse((o) => {
+  /** Indlæs bræt, huller og kugle (glTF fra Blender) fra mappen `base`. */
+  async loadModels(base: string): Promise<void> {
+    const loader = new GLTFLoader();
+    const [board, holes, ball] = await Promise.all(
+      ['board.glb', 'holes.glb', 'ball.glb'].map((f) => loader.loadAsync(base + f)),
+    );
+
+    board.scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       m.receiveShadow = true;
-      m.castShadow = /^Rail|^Rim/.test(m.name);
+      m.castShadow = m.name.startsWith('Rail');
+    });
+
+    holes.scene.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.receiveShadow = true;
+      m.castShadow = m.name.startsWith('Rim');
       const hole = HOLES.find((h) => h.id === m.name);
       if (hole) {
         // Egen materialekopi pr. hul, så det kan lyse op, når der scores.
         const mat = (m.material as THREE.MeshStandardMaterial).clone();
         mat.emissive = new THREE.Color(HOLE_COLORS[hole.color]);
-        mat.emissiveIntensity = 0.35;
+        mat.emissiveIntensity = HOLE_GLOW;
         m.material = mat;
-        // Løft bunden, så farven kan ses fra spillerens vinkel.
-        m.position.y = HOLE_FLOOR;
         this.holeFlash.set(hole.id, { mat, t: 0 });
       }
     });
-    this.scene.add(gltf.scene);
+
+    this.scene.add(board.scene, holes.scene);
+
+    let ballMesh: THREE.Mesh | null = null;
+    ball.scene.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) ballMesh = o as THREE.Mesh;
+    });
+    if (!ballMesh) throw new Error('ball.glb indeholder ingen mesh');
+    this.addBalls(ballMesh);
   }
 
   private addLights(): void {
-    this.scene.add(new THREE.HemisphereLight(0xfff4e0, 0x1a1440, 0.55));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.7);
+    this.scene.add(new THREE.HemisphereLight(0xfff4e0, 0x1a1440, 0.35));
+    // Et varmt spotlys over pointfeltet giver dybde: lyst ved hullerne, mørkere ved spilleren.
+    const spot = new THREE.SpotLight(0xfff0d0, 40, 14, 0.55, 0.9, 1.5);
+    spot.position.set(0, 7, -1);
+    spot.target.position.copy(toWorld(0, 2.6, 0));
+    this.scene.add(spot, spot.target);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.3);
     sun.position.set(-3, 9, 4);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -95,41 +117,11 @@ export class GameScene {
     }
   }
 
-  private ballTexture(): THREE.CanvasTexture {
-    const c = document.createElement('canvas');
-    c.width = 512;
-    c.height = 256;
-    const g = c.getContext('2d')!;
-    g.fillStyle = '#d4142a';
-    g.fillRect(0, 0, 512, 256);
-    // Hvidt bælte og hvide prikker, så rotationen kan ses.
-    g.fillStyle = '#fff6ea';
-    g.fillRect(0, 116, 512, 24);
-    g.fillStyle = '#8f0816';
-    g.fillRect(0, 112, 512, 4);
-    g.fillRect(0, 140, 512, 4);
-    g.fillStyle = '#fff6ea';
-    for (let i = 0; i < 6; i++) {
-      for (const y of [56, 200]) {
-        g.beginPath();
-        g.arc(i * 85.3 + (y > 128 ? 42 : 0), y, 15, 0, Math.PI * 2);
-        g.fill();
-      }
-    }
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    t.anisotropy = 8;
-    return t;
-  }
-
-  private addBalls(): void {
-    const geo = new THREE.SphereGeometry(BALL_R, 48, 32);
-    const mat = new THREE.MeshPhysicalMaterial({
-      map: this.ballTexture(),
-      roughness: 0.28,
-      clearcoat: 1,
-      clearcoatRoughness: 0.08,
-    });
+  /** To kugler ud fra modellen i ball.glb (radius 0,15 m som i fysikken). */
+  private addBalls(template: THREE.Mesh): void {
+    const geo = template.geometry;
+    const mat = template.material as THREE.MeshStandardMaterial;
+    if (mat.map) mat.map.anisotropy = 8;
     const shadowGeo = new THREE.CircleGeometry(BALL_R * 1.15, 32).rotateX(-Math.PI / 2);
     const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25, depthWrite: false });
     BALL_HOMES.forEach((h) => {
@@ -170,7 +162,7 @@ export class GameScene {
         toWorld(FIELD.xMin, HAND_LIMIT_Y, 0.008),
         toWorld(FIELD.xMax, HAND_LIMIT_Y, 0.008),
       ]),
-      new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.08, gapSize: 0.08, transparent: true, opacity: 0.25 }),
+      new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.14, gapSize: 0.08, transparent: true, opacity: 0.5 }),
     );
     edge.computeLineDistances();
     this.scene.add(edge);
@@ -263,17 +255,20 @@ export class GameScene {
   }
 
   update(world: World, dt: number, holding: boolean): void {
-    world.balls.forEach((b, i) => this.updateBall(b, this.ballMeshes[i], this.ballShadows[i], world));
+    if (this.ballMeshes.length) {
+      world.balls.forEach((b, i) => this.updateBall(b, this.ballMeshes[i], this.ballShadows[i], world));
+    }
 
     // Hånd-zonen lyser svagt op, mens man holder en kugle.
     const zm = this.handZone.material as THREE.MeshBasicMaterial;
-    zm.opacity += ((holding ? 0.07 : 0) - zm.opacity) * Math.min(1, dt * 8);
-    (this.handEdge.material as THREE.LineDashedMaterial).opacity = holding ? 0.7 : 0.25;
+    zm.opacity += ((holding ? 0.1 : 0.03) - zm.opacity) * Math.min(1, dt * 8);
+    const em = this.handEdge.material as THREE.LineDashedMaterial;
+    em.opacity = holding ? 0.95 : 0.5;
+    em.color.set(holding ? 0xffe27a : 0xffffff);
 
     for (const f of this.holeFlash.values()) {
       if (f.t > 0) f.t = Math.max(0, f.t - dt * 0.9);
-      // Hullerne gløder svagt hele tiden og blusser op ved point.
-      f.mat.emissiveIntensity = 0.35 + f.t * f.t * 3;
+      f.mat.emissiveIntensity = HOLE_GLOW + f.t * f.t * 3;
     }
   }
 
